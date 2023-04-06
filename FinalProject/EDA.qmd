@@ -1,0 +1,235 @@
+---
+title: "Hotel Booking Analysis"
+format: html
+---
+
+
+```{r packages}
+library(tidyverse)
+library(caret)
+library(googledrive)
+library(GGally)
+library(infer)
+library(ggthemes)
+library(rsample)
+library(ggmosaic)
+theme_set(theme_tufte())
+```
+
+
+```{r data}
+hotel = read_csv("Hotel Reservations.csv")
+```
+
+
+```{r}
+hotel  |> 
+    skimr::skim()
+```
+
+
+It appears as though there are not any missing values which is good, the next question is exploring the distributions of these variables.
+
+We should probably start with our supervisor here, which I believe is booking status.
+
+```{r}
+hotel  |>  
+    ggplot(aes(x = booking_status)) +
+    geom_bar()
+```
+
+It appears as though the majority were not canceled, though the classes are fairly balanced.
+
+Let's explore all of the categorical columns real quick
+
+```{r}
+hotel  |> 
+    keep(is.character)   |> 
+    select(-Booking_ID)  |> 
+    gather()  |> 
+    ggplot(aes(x = value)) +
+    facet_wrap(~key, scales = "free") +
+    geom_bar() + 
+    coord_flip()
+```
+
+Now the numeric columns
+
+```{r}
+hotel  |> 
+    keep(is.numeric)   |> 
+    gather()  |> 
+    ggplot(aes(x = value)) +
+    facet_wrap(~key, scales = "free") +
+    geom_histogram() +
+    coord_flip()
+```
+
+Let's go ahead and add the Booking status to study potential relationships with the features
+
+```{r}
+hotel  |> 
+    keep(is.character)   |> 
+    select(-Booking_ID)  |> 
+    pivot_longer(cols = type_of_meal_plan:market_segment_type,
+    names_to = "columns")  |> 
+    ggplot(aes(y = value, fill = booking_status)) +
+    facet_wrap(~columns, scales = "free") +
+    geom_bar(position = "fill")
+```
+
+There does appear to be some difference in proportions based off of the categorical. Complementary never seems to cancel whereas Onlien and Meal plan 2 seem to have the highest incidence of canceling.
+
+```{r}
+hotel  |> 
+    select(where(is.numeric), booking_status)  |> 
+    pivot_longer(cols = no_of_adults:no_of_special_requests,
+    names_to = "columns")  |> 
+    ggplot(aes(x = value, fill = booking_status)) +
+    facet_wrap(~columns, scales = "free", nrow = 2) +
+    geom_histogram(position = 'dodge')
+```
+
+It appears as though there really isn't too much to differentiate them in terms continuous.
+
+```{r}
+hotel  |> 
+    select(where(is.numeric), booking_status)  |> 
+    pivot_longer(cols = no_of_adults:no_of_special_requests,
+    names_to = "columns") |> 
+    group_by(columns, booking_status) |> 
+    summarise(group_means = mean(value)) |> 
+  pivot_wider(names_from = booking_status, values_from = group_means)
+```
+
+I want to do a t-test on each of these groups to help understand if there are significant differences between the different groups
+
+```{r}
+hotel |> 
+  t_test(formula = avg_price_per_room ~ booking_status,
+         alternative = "two-sided") |> 
+  mutate(variable = "avg_price_per_room")
+```
+
+Let's go ahead and prototype this using a string
+
+```{r t_test_proto}
+var_name = "avg_price_per_room"
+response = "booking_status"
+hotel |> 
+  t_test(formula = paste(var_name, " ~ ", response) |> as.formula(),
+         alternative = "two-sided") |> 
+  mutate(variable = var_name)
+```
+We now create the function
+
+```{r t_test_func}
+auto_t_test <- function(data, var_name, factor, order_vec){
+  df_out <- data |> 
+    t_test(formula = paste(var_name, " ~ ", factor) |> as.formula(),
+          order = order_vec,
+         alternative = "two-sided") |>
+  mutate(variable = var_name)
+  return(df_out)
+}
+
+```
+
+We now attempt to apply this to all of the numeric columns
+
+```{r}
+numeric_cols <- hotel |> 
+  keep(is.numeric) |> 
+  colnames()
+t_hotel <- sapply(numeric_cols, FUN = auto_t_test, data = hotel, factor = "booking_status", 
+       order_vec =  c("Canceled", "Not_Canceled")) |> 
+  t() |> 
+  apply(MARGIN= 2, FUN = unlist) |> 
+  
+  as_tibble()  |> 
+  select(-alternative) |> 
+  relocate(variable) |> 
+  mutate(across(.cols = statistic:upper_ci, ~ as.numeric(.x)))
+```
+
+Getting all groups that are greater
+
+```{r}
+t_hotel |> 
+  filter(p_value < .05 / n() & estimate > 0) |> 
+  select(variable, estimate) |> 
+  arrange(desc(estimate))
+```
+
+```{r}
+t_hotel |> 
+  filter(p_value < .05 / n() & estimate < 0) |> 
+  select(variable, estimate) |> 
+  arrange(desc(estimate))
+```
+Let's investigate the lead_time a little bit more
+
+```{r}
+hotel |> 
+  ggplot(aes(x = lead_time, y = booking_status, fill = booking_status)) +
+  geom_violin()
+```
+
+Now onto the categorical variables.
+
+```{r cat_proto}
+hotel |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(type_of_meal_plan), fill = booking_status)) +
+  theme_mosaic() +
+  scale_fill_manual(values = c( "#ABD9E9", "#FEE090")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+```
+
+
+```{r}
+hotel |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(room_type_reserved), fill = booking_status)) +
+  theme_mosaic() +
+  scale_fill_manual(values = c( "#ABD9E9", "#FEE090")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+
+```{r}
+hotel |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(market_segment_type), fill = booking_status)) +
+  theme_mosaic() +
+  scale_fill_manual(values = c( "#ABD9E9", "#FEE090")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+Let's start off with a pretty basic logistics regression
+
+```{r}
+hotel <- hotel |> 
+  select(-Booking_ID)
+```
+
+
+
+```{r}
+train_test_split <- initial_split(hotel, prop = 3/4) 
+
+hotel_train <- training(train_test_split)
+hotel_test <- testing(train_test_split)
+```
+
+
+```{r}
+dv <- dummyVars(booking_status ~ ., hotel_train)
+dV_train <- predict(dV, hotel_train)
+
+```
+

@@ -1,0 +1,5 @@
+---
+title: "Legacy theming with bslib and thematic"
+output: pdf_document
+---
+
