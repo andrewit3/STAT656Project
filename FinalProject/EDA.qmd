@@ -12,6 +12,7 @@ library(GGally)
 library(infer)
 library(ggthemes)
 library(rsample)
+library(ggfortify)
 library(ggmosaic)
 theme_set(theme_tufte())
 ```
@@ -20,6 +21,7 @@ theme_set(theme_tufte())
 ```{r data}
 hotel = read_csv("Hotel Reservations.csv")
 ```
+
 
 
 ```{r}
@@ -209,27 +211,183 @@ hotel |>
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 ```
 
+Chi-Squared Test for categorical
 
-Let's start off with a pretty basic logistics regression
+```{r}
+# calculate the observed statistic
+observed_indep_statistic <- hotel %>%
+  specify(booking_status ~ day_of_week) %>%
+  hypothesize(null = "independence") %>%
+  calculate(stat = "Chisq")
+observed_indep_statistic
+```
+
+
+```{r}
+hotel_clean %>%
+  specify(booking_status ~ day_of_week) %>%
+  assume(distribution = "Chisq") %>%
+  visualize() + 
+  shade_p_value(observed_indep_statistic,
+                direction = "greater")
+```
+
+
+Lastly, let's explore what to do exactly about these data variables
+
+```{r}
+hotel |> 
+  ggplot(aes(x = arrival_month, color = booking_status)) +
+  geom_line(stat = "count", linewidth = 2)
+```
+
+```{r}
+hotel |> 
+  group_by(arrival_month) |> 
+  count(booking_status) |> 
+  ungroup() |> 
+  pivot_wider(names_from = booking_status, values_from = n) |> 
+  mutate(total = Canceled + Not_Canceled,
+        prop_canceled = Canceled / (total)) |> 
+  ggplot(aes(x = arrival_month, y = prop_canceled)) +
+  geom_point(aes(size = total), color = "maroon") +
+  geom_line()
+```
+
+
+```{r}
+hotel |> 
+  group_by(arrival_year) |> 
+  count(booking_status) |> 
+  ungroup() |> 
+  pivot_wider(names_from = booking_status, values_from = n) |> 
+  mutate(total = Canceled + Not_Canceled,
+        prop_canceled = Canceled / (total)) |> 
+  ggplot(aes(x = arrival_year, y = prop_canceled)) +
+  geom_point(aes(size = total), color = "maroon") +
+  geom_line()
+```
+
+This could probably be an indicator variable.
+
+```{r}
+hotel |>
+  group_by(arrival_date) |> 
+  count(booking_status) |> 
+  ungroup() |> 
+  pivot_wider(names_from = booking_status, values_from = n) |> 
+  mutate(total = Canceled + Not_Canceled,
+        prop_canceled = Canceled / (total)) |> 
+  ggplot(aes(x = arrival_date, y = prop_canceled)) +
+  geom_point(aes(size = total), color = "maroon") +
+  geom_line()
+
+```
+
+Day of the week is probably gonna be helpful here
 
 ```{r}
 hotel <- hotel |> 
-  select(-Booking_ID)
-```
-
-
-
-```{r}
-train_test_split <- initial_split(hotel, prop = 3/4) 
-
-hotel_train <- training(train_test_split)
-hotel_test <- testing(train_test_split)
+  mutate(arrival_dt = ymd(paste(arrival_year, arrival_month, arrival_date ,sep="-"))) |> 
+  filter(!is.na(arrival_dt))
 ```
 
 
 ```{r}
-dv <- dummyVars(booking_status ~ ., hotel_train)
-dV_train <- predict(dV, hotel_train)
+hotel <- hotel |> 
+  mutate(day_of_week = weekdays(arrival_dt))
+```
+
+
+```{r}
+hotel |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(day_of_week), fill = booking_status))
+```
+
+```{r}
+hydroTSM::time2season(hotel$arrival_dt, out.fmt = "seasons")
+hotel <- hotel |> 
+  mutate(season = hydroTSM::time2season(arrival_dt, out.fmt = "seasons"))
+```
+
+
+```{r}
+hotel |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(season), fill = booking_status))
+```
+
+```{r}
+hotel |> 
+  mutate(day_type = if_else(day_of_week %in% c("Saturday", "Sunday"), "Weekend", "Weekday")) |> 
+  ggplot() +
+  geom_mosaic(aes(x = product(day_type), fill = booking_status))
+```
+
+I'm not sure if type of day is that much more useful than just the day.
+
+So, season, year and then day type are useful and more actionable as opposed to the raw numbers.
+
+```{r data_processing}
+hotel_clean <- hotel |> 
+  filter(arrival_date != 29 & arrival_month!= 2) |> 
+  mutate(arrival_dt = ymd(paste(arrival_year, arrival_month, arrival_date ,sep="-")),
+         day_of_week = weekdays(arrival_dt),
+         day_type = if_else(day_of_week %in% c("Saturday", "Sunday"), "Weekend", "Weekday"),
+         total_people = no_of_children + no_of_adults,
+         season = hydroTSM::time2season(arrival_dt, out.fmt = "seasons"),
+         across(where(is.character), as.factor))
+hotel_clean
+```
+
+
+```{r}
+write_rds(x = hotel_clean, file = "Data/hotel.rds")
+```
+
+
+```{r}
+hotel_clean |> 
+  ggplot() +
+  ggforce::geom_autopoint(aes(type_of_meal_plan, room_type_reserved))
+```
+
+# Works pretty well for discrete versus discrete
+
+```{r}
+# Discrete and continuos
+hotel_clean |> 
+  ggplot() +
+  ggforce::geom_autopoint(aes(type_of_meal_plan, avg_price_per_room))
+```
+
+# Continuos versus Continous
+
+```{r}
+hotel_clean |> 
+  ggplot(aes(lead_time, avg_price_per_room)) +
+  ggforce::geom_autopoint(aes(lead_time, avg_price_per_room), color = "maroon", position = "jitter") +
+  xlab("Time ") +
+  ylab("Average Price per Room")
+```
+
+```{r}
+ggpairs(data = hotel_clean,  columns = 3:5, aes(color = day_type), columnLabels = c("# Children", "# Adults", "# Weeknights"), lower = list(continuous = ggally_count, combo = ggally_dot_no_facet)) +
+  theme_base()
+```
+
+```{r}
+list.files("R", full.names = TRUE) %>% walk(source)
+```
+
+
+```{r}
+hotel_clean |> 
+  ggplot_two_columns(col1 = no_of_adults, col2 = no_of_children)
+```
+
+```{r}
 
 ```
 
